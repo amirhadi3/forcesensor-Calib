@@ -1,87 +1,142 @@
-#n-bit CRC checksum generation and checking based on algorithm in Wikipedia
-#
+import time
+import numpy as np
+import csv
+import CRC
 
-def crc(p, n=32, polynomial=0xedb88320):
-	"""
-    Carry out XOR + shifting routine for n-bit CRC Checksum creation and checking
-    :param n the number of bits in the checksum (default is 32)
-    :param p the bit sequence in hex or int which includes the number whose checksum it is
-    	and either n zeros or the crc to check appended to the end
-    :param polynomial the bit string of the CRC polynomial to use
-    	Default is the typical CRC-32 polynomial. CRC-4 often uses 0x0C
-    :return p after all the shifting and XOR-ing
-    	If checking a CRC, p should be 0
-    	If creating a CRC, p's last n bytes are the CRC-n checksum
+def crc4(p, polynomial=0x3, table=[]):
     """
-    
-    #Store the binary representation of p and the number of bits
-    pBin = bin(p)[2:]
-    length = len(pBin)
+    Calculates the CRC-4 checksum of a number by bitwise operations or by
+    using a lookup table
+    :param p is the list of bytes to find the CRC of (list of ints)
+    :param polynomial the divisor polynomial to use
+        Default is 0x3
+    :param table provide the lookup table to calculate CRC that way
+    	Is faster with table but can also be done without
+    	Leave unset to calculate using bitwise operations instead
+    :return the CRC4 checksum as an int
+    """
+    #Initialize CRC to 0    
+    crc = 0
+    length = len(p)
 
-    #When p gets smaller than this, the dividend is zero (see Wikipedia)
-    minVal = 2**n 
+    if table == []:
+        for j in range(length):
+	    crc ^= p[j]
+	    for i in range(8): #Iterate through each bit
+	        if crc & 0x80 != 0: #If MSD is 1
+	            crc = ((crc << 1) & 0xFF) ^ (polynomial << 4)
+	        else: #Shift the CRC so the MSD is 1
+	            crc <<= 1
+	            crc &= 0xFF #Don't keep anything beyond 8 bits
+        return crc >> 4
+    else: 
+	for i in range(length):
+	    #XOR-in next input byte into MSB of crc and get this MSB, that's our new intermediate divident
+	    pos = (crc << 4 ^ (p[i])) & 0xFF
+            #Update the CRC from the Lookup table
+            crc = int(table[pos])
+        return crc
 
-    #Shift the polynomial to align with the most significant bit
-    poly = polynomial << (length - len(bin(polynomial)) + 2) #Plus 2 is for the extra 2 characters in the binary string: 0b...
-    i = 0
-    
-    #Terminate when the dividend is equal to zero and only the checksum portion remains
-    while p >= minVal: 
-    	#Shift the divisor until it is aligned with the most significant 1 in p (in binary)
-        while pBin[i] == '0' and i <= length - n: 
-            i = i + 1
-            poly = poly >> 1
+def calculate_CRC4_table():
+    """
+    Generates a lookup table to find the CRC-4 checksum of a number
+    :return the table as a list of 256 values
+    """
+    polynomial = 0x3;
+    row = []
+    CRC4_table = np.zeros(256)
+    with open('CRC4_LUT.csv','w') as csvfile:
+        outfile = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        i = 0
+        for dividend in range(256): # iterate over all possible input byte values 0 - 255
+            curByte = dividend & 0xFF;
+            for bit in range(8):
+                if (curByte & 0x80) != 0:
+                    curByte <<= 1
+                    curByte ^=  (polynomial << 4)
+                    curByte &= 0xFF
+                else:
+                    curByte <<= 1
+                    curByte &= 0xFF
+            curByte >>= 4
+            
+            row.append(hex(curByte))
+            if ((dividend+1)%16 == 0):
+                outfile.writerow(row)
+                row = []
+                
+            CRC4_table[i] = curByte
+            i += 1
+            
+            
+        return CRC4_table
 
-        #XOR the number with the divisor
-        p = p ^ poly 
-        #Update the bit string (used in the loop above)
-        pBin = bin(p)[2:]
-        #Make sure leading zeros weren't removed by Python
-        while len(pBin) < length:
-            pBin = '0' + pBin
-
-    return p
-
-def calc_crc(p, n=32, polynomial=0xedb88320):
-	"""
-    Create n-bit CRC Checksum
-    :param n the number of bits in the checksum (default is 32)
-    :param p the bit sequence in bytes, hex, or int to create the checksum for 
-    	For example, bytes 0 to 46 in the 51 byte sensor packet
-    :param polynomial the bit string of the CRC polynomial to use
-    	Default is the typical CRC-32 polynomial. CRC-4 often uses 0x0C
-    :return The n-bit checksum
+def crc32(p, polynomial=0x04C11DB7, table=[]):
+    """
+    Calculates the CRC-32 checksum of a number using bitwise operations
+    or with a lookup table
+    :param p is the list of bytes to find the CRC of (list of ints)
+    :param polynomial the divisor polynomial to use
+        Default is 0x04C11DB7
+    :param table provide the lookup table to calculate CRC that way
+    	Is faster with table but can also be done without
+    	Leave unset to calculate using bitwise operations instead
+    :return the CRC32 checksum as an int
     """
 
-    #Convert to correct type and append an n bit buffer of 0s
-    if type(p) == bytes:
-        p = int(p.hex(),16) << n
-    else:
-        p = p << n
-    
-   pBin = bin(crc(p, n, polynomial))
+    length = len(p)
+    crc = 0 #CRC value is 32bit
 
-	#Return the n-bit CRC checksum (last n bits of p)
-    return int(pBin[n:],2) 
+    if table == []:
+        for j in range(length):
+	    crc ^= (p[j] << 24) # move byte into MSB of 32bit CRC
+	    crc &= 0xFFFFFFFF #Keep crc 32 bits
+	        
+	    for i in range(8):
+	        if (crc & 0x80000000) != 0: #test for MSB = bit 31
+	            crc = ((crc << 1) ^ polynomial) & 0xFFFFFFFF
+	        else:
+	            crc <<= 1;
+	            crc &= 0xFFFFFFFF #Keep crc 32 bits
+    else: 
+        for i in range(length):
+	    #XOR-in next input byte into MSB of crc and get this MSB, that's our new intermediate divident
+	    pos = ((crc ^ (p[i] << 24)) >> 24) & 0xFF
+	    #Shift out the MSB used for division per lookup table and XOR with the remainder
+	    crc = ((crc << 8) ^ int(table[pos])) & 0xFFFFFFFF
 
-def check_crc(crc, p, n=32, polynomial=0xedb88320):
-	    """
-	    Check CRC Checksum with arbitrary number of bits
-	    :param crc the n bit checksum in hex, int, or bytes
-	    :param p the bit sequence to compare to the checksum. (For example, bytes 0 to 46 in the 51 byte sensor packet)
-	    :param polynomial the bit string of the CRC polynomial to use
-	    	Default is the typical CRC-32 polynomial. CRC-4 often uses 0x0C
-	    :return True if the checksum matches, False otherwise
-	    """
-	    
-	    #Convert everything to correct type
-	    if type(p) == bytes:
-	   		p = int(p.hex(),16)
+    return crc
 
-	   	#Append the crc to the end of p (least significant side)
-	    p = (p << n) + crc
 
-	    p = crc(p, n, polynomial)
-	    
-	    #After all the shifting and XOR-ing is complete, p should equal 0
-	    return p == 0
+def calculate_CRC32_table():
+    """
+    Generates a lookup table to find the CRC-32 checksum of a number
+    :return the table as a list of 256 ints
+    """
+    polynomial = 0x04C11DB7;
+    row = []
+    CRC32_table = np.zeros(256)
+    with open('CRC32_LUT.csv','w') as csvfile:
+        outfile = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        i = 0
+        for dividend in range(256): # iterate over all possible input byte values 0 - 255
+            curByte = dividend << 24;
+            for bit in range(8):
+                if (curByte & 0x80000000) != 0:
+                    curByte <<= 1
+                    curByte ^=  polynomial
+                    curByte &= 0xFFFFFFFF
+                else:
+                    curByte <<= 1
+                    curByte &= 0xFFFFFFFF
+            
+            row.append(hex(curByte))
+            if ((dividend+1)%8 == 0):
+                outfile.writerow(row)
+                row = []
+                
+            CRC32_table[i] = curByte
+            i += 1
+            
+            
+        return CRC32_table
