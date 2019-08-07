@@ -1,13 +1,13 @@
-import pyftdi.serialext as serial
-import time
-from numpy import random
+# import pyftdi.serialext as serial
+# import time
+# from numpy import random
 
 """
 Do some tests with latency using 2 different libraries
 """
 
 #Create some random data
-toSend = bytes(random.randint(0,10,size=51).tolist())
+# toSend = bytes(random.randint(0,10,size=51).tolist())
 
 ###### Using pyftdi.serialext:
 #open 2 ports
@@ -34,34 +34,52 @@ toSend = bytes(random.randint(0,10,size=51).tolist())
 
 
 ###### Using ftd2xx:
-import ftd2xx
-#Open 2 ports
-port = ftd2xx.open(0)
-port2 = ftd2xx.open(1)
-port.setBaudRate(5000000)
-port2.setBaudRate(5000000)
+# import ftd2xx
+# #Open 2 ports
+# port = ftd2xx.open(0)
+# port2 = ftd2xx.open(1)
+# port.setBaudRate(5000000)
+# port2.setBaudRate(5000000)
 
-#Set latency timer and transfer size
-port.setLatencyTimer(1)
-port2.setLatencyTimer(1) #Makes a big difference. Default is 16ms, min is 1ms, 1ms is by far the fastest
+# #Set latency timer and transfer size
+# port.setLatencyTimer(1)
+# port2.setLatencyTimer(1) #Makes a big difference. Default is 16ms, min is 1ms, 1ms is by far the fastest
 
-port.setUSBParameters(64,64) #Makes no difference for some reason
-port2.setUSBParameters(64,64)
+# port.setUSBParameters(64,64) #Makes no difference for some reason
+# port2.setUSBParameters(64,64)
 
-#Measure round-trip latency of sending single byte and returning 51
+# #Measure round-trip latency of sending single byte and returning 51
+# start = time.time()
+# port.write(b'\xff')
+# read1 = port2.read(1)
+# port2.write(toSend)
+# read2 = port.read(51)
+# end = time.time()
+
+# print("Elapsed Time: " + str((end-start)*1000) + "ms")
+
+# #Ensure correct thing was measured
+# print(read1)
+# print(read2)
+
+# #Close ports
+# port2.close()
+# port.close()
+
+
+import pylibftdi as ftdi
+import time
+
+d = ftdi.Device('USB-COM485 Plus2', interface_select=1)
+e = ftdi.Device('USB-COM485 Plus2', interface_select=2)
+
 start = time.time()
-port.write(b'\xff')
-read1 = port2.read(1)
-port2.write(toSend)
-read2 = port.read(51)
+e.write('1')
+while d.read(1) == '':
+	continue
 end = time.time()
 
-print("Elapsed Time: " + str((end-start)*1000) + "ms")
+print((end-start)*1000)
 
-#Ensure correct thing was measured
-print(read1)
-print(read2)
-
-#Close ports
-port2.close()
-port.close()
+d.close()
+e.close()

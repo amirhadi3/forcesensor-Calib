@@ -1,6 +1,5 @@
 from sensor import sensor
 import time
-import queue
 
 def pause_micro(us):
 	for i in range(us*10):

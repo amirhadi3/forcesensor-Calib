@@ -4,9 +4,10 @@
 ## To start virtual device, call `python virt_device.py` from a terminal instance
 ## Start the controlling script from a separate instance of terminal
 
-import ftd2xx
+import pylibftdi as ftdi
 from numpy import random
 import time
+import sys
 import CRC
 
 INIT_BYTE = 'AA'
@@ -15,24 +16,19 @@ BYTES_PER_DIGIT_IN = 2
 
 class virtual_sensor:
 
-	def __init__(self, portNum=1):
-		#I have no clue why this is necesary, but it is. Without this, F's are sometimes transmitted as 7s...?
-		# import pyftdi.serialext as serial
-		# tmpPortSensor = serial.serial_for_url('COM4', baudrate=5000000,timeout=1)
-		# tmpPortPC = serial.serial_for_url('COM3', baudrate=5000000,timeout=1)
-		# tmpPortSensor.close()
-		# tmpPortPC.close()
+	def __init__(self, portNum=2):
 
 		#Now set up the real ports
-		self.port = ftd2xx.open(portNum)
-		self.port.setLatencyTimer(1)
-		self.port.setTimeouts(3,3)
-		self.port.setUSBParameters(64)
-		self.port.setBaudRate(5000000)
+		self.port = ftdi.Device('USB-COM485 Plus2', interface_select=portNum)
+		self.port.ftdi_fn.ftdi_set_latency_timer(1)
+		# self.port.setTimeouts(3,3)
+		# self.port.setUSBParameters(64)
+		self.port.baudrate =5000000
 		self.reset()
-		self.port.resetPort()
+		self.port.ftdi_fn.ftdi_usb_reset()
 		print(self.port)
 
+		self.num_errors = 0
 		self.send_flag = False
 		self.counter = 0
 		self.counter2 = 0
@@ -62,7 +58,10 @@ class virtual_sensor:
 		self.crc32_table = CRC.calculate_CRC32_table()
 
 	def __del__(self):
-		self.port.close()
+		try:
+			self.port.close()
+		except AttributeError:
+			print('Shutting down')
 
 	def makeByte(self, value=-1, length=1):
 		byte = ''
@@ -156,7 +155,7 @@ class virtual_sensor:
 		"""
 		Reset input and output buffers
 		"""
-		self.port.resetDevice()
+		self.port.ftdi_fn.ftdi_usb_reset()
 		print('Sensor reset successfully')
 
 	def reset_transducer(self, command):
@@ -214,9 +213,9 @@ class virtual_sensor:
 		p = self.toBytes(p)
 
 		if n == 4:
-			return hex(CRC.crc4(p,polynomial,self.crc4_table))[2:]
+			return "%x" % CRC.crc4(p,polynomial,self.crc4_table)
 		elif n == 32:
-			return hex(CRC.crc32(p,polynomial,self.crc32_table))[2:]
+			return "%x" % CRC.crc32(p,polynomial,self.crc32_table)
 
 	def toBytes(self, string):
 		"""
@@ -230,6 +229,18 @@ class virtual_sensor:
 		#Split into list and return
 		return [int(string[i:i+2],16) for i in range(0,len(string),2)]
 
+	def read(self, n):
+		try:
+			return self.port.read(n*BYTES_PER_DIGIT_IN)
+		except ftdi._base.FtdiError:
+			self.num_errors += 1
+			if self.num_errors > 100:
+				print('Error: connection failed. Shutting down...')
+				self.port.close()
+				sys.exit(0)
+			print('Connection problem. Read failed')
+			return ''
+
 	def run(self):
 		"""
 		Simulate a sensor running in the background. Respond to commands when they come,
@@ -237,24 +248,26 @@ class virtual_sensor:
 		"""
 
 		while (True):
-			while(self.port.getStatus()[0] < 1):
+			cmd = ''
+
+			while(cmd == None or cmd == ''):
 				#Wait for new command while executing current one (send packages if start_data_transfer was called)
 				if self.send_flag:
 					self.sendPackage()
 					self.pause_micro(666) #Pause for 666us (approx 1500Hz)
-			
-			cmd = str(self.port.read(1*BYTES_PER_DIGIT_IN))
+				cmd = self.read(1)
+
 			print(cmd)
 
 			if str.startswith(cmd, '4'):
 				self.config_dac()
-				self.port.read(1)
+				self.read(1)
 			elif str.startswith(cmd, '3'):
 				self.config_trans()
-				self.port.read(1)
+				self.read(1)
 			elif str.startswith(cmd, '2'):
 				self.config_imu()
-				self.port.read(1)
+				self.read(1)
 			else:
 				#Execute current command
 				try:
@@ -262,7 +275,7 @@ class virtual_sensor:
 				except KeyError:
 					print('Invalid Command')
 
-			self.port.read(1*BYTES_PER_DIGIT_IN)
+			self.read(1)
 
 		self.port.close() #close the port when done
 

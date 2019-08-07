@@ -1,12 +1,13 @@
 import numpy as np
 import sensor_output as out
-import ftd2xx
+import pylibftdi as ftdi
 import CRC
 import threading
 import time
+import struct
 
 INIT_BYTE = 0xAA
-BYTES_PER_DIGIT_IN = 2
+BYTES_PER_DIGIT_IN = 1
 """
 Implementation of sensor class using ftd2xx instead of pyftdi.serialext.
 This is probably the best because the latency timer can be set programmatically
@@ -18,11 +19,10 @@ the functions below
 data_stream = None
 class sensor:
 	
-	def __init__(self, baud=5000000, portNum=0):
+	def __init__(self, baud=5000000, portNum=1):
 		"""
 		Opens a connection to a serial device and creates a serial object with which to control it
-		:param portNum Index of port of device to open. Default value is 0, but 1 or even 2
-			are also common
+		:param portNum Index of port of device to open. Default value is 1, but 2 is also common
 		:param baud baudrate of connection. Ensure this matches sensor
 		"""
 
@@ -38,18 +38,24 @@ class sensor:
 		self.crc4_table = CRC.calculate_CRC4_table()
 		self.crc32_table = CRC.calculate_CRC32_table()
 
-		self.port = ftd2xx.open(portNum)
-		self.port.setLatencyTimer(1)
-		self.port.setTimeouts(16,16)
-		self.port.setUSBParameters(64)
-		self.port.setBaudRate(baud)
-		self.__reset()
+		self.num_errors = 0
+
+		self.port = ftdi.Device('USB-COM485 Plus2', interface_select=portNum)
+		self.port.ftdi_fn.ftdi_set_latency_timer(1)
+		self.port.ftdi_fn.ftdi_set_line_property(8,1,0)
+		# self.port.setTimeouts(16,16)
+		# self.port.setUSBParameters(64)
+		self.port.baudrate = baud
+		#self.__reset()
 		self.threadLock = threading.Lock()
 		self.thread = read_thread(crc4_table=self.crc4_table, port=self.port, threadLock=self.threadLock)
 
 	#Close session
 	def __del__(self):
-		self.port.close()
+		try:
+			self.port.close()
+		except AttributeError:
+			print('Shutting down')
 		print('Connection closed')
 		
 
@@ -96,8 +102,8 @@ class sensor:
 		byte2 = int(data_rate[2:3],16)
 
 		#Prompt the start of continuous data transmission
-		self.port.write(self.toStr([16, byte1, -byte2], with_crc4=True))
-		self.port.purge(1)
+		self.port.write(self.toStr([16, byte1, byte2 << 4], with_crc4=2))
+		self.port.flush(ftdi.FLUSH_OUTPUT)
 
 		self.thread.start()
 
@@ -116,7 +122,7 @@ class sensor:
 		if self.thread.is_alive():	
 			self.thread.join(1)
 
-	def measure(self):
+	def poll(self):
 		#Take one measurement and parse it
 		return self.__do([0x12],expect_package=True)
 	
@@ -266,7 +272,7 @@ class sensor:
 
 		if category == 0: #Configure Root Registers
 			if (type(setting) != tuple and type(setting) != str) or len(setting) != 2 or setting[0] not in [0,1] or setting[1] not in [0,1]:
-				logwarn('Invalid setting. Please enter a tuple or string with 2 binary elements to configure root registers')
+				print('Invalid setting. Please enter a tuple or string with 2 binary elements to configure root registers')
 				return
 
 			config = int('000' + str(setting[0]) + str(setting[1]) + '000',2)
@@ -355,7 +361,7 @@ class sensor:
 		:param sensor_num the index of the sensor to send the command to.
 				The default value of -1 corresponds to sending the command to all the sensors	
 		"""
-		if pos:
+		if positive:
 			self.config_adc(adc_num, 3, channel)
 		else:
 			self.config_adc(adc_num, 4, channel)
@@ -364,10 +370,8 @@ class sensor:
 		"""
 		Configure the DAC by setting the output voltage of a specified channel or powering off a channel
 		:param channel the channel to set the voltage of (int between 1 and 6, inclusive)
-		:param voltage the voltage to set the output of the selected channel to
+		:param voltage the voltage to set the output of the selected channel to. This is a 12-bit number between 0 and max (0xFFF=4095)
 			input 0 to shut a channel off
-		:param sensor_num the index of the sensor to send the command to.
-			The default value of -1 corresponds to sending the bytes to all the sensors	
 		"""
 		
 		if channel < 1 or channel > 6:
@@ -376,7 +380,7 @@ class sensor:
 
 		config = []
 		if voltage == 0:
-			config = [0x4, channel]
+			config = [0x47, channel]
 		else:
 			volts_bin = bin(voltage)[2:]
 
@@ -384,13 +388,17 @@ class sensor:
 			while len(volts_bin) < 12:
 				volts_bin = '0' + volts_bin
 
-			#Make the last byte negative to indicate the CRC4 should be added to that byte, not in an additional byte
-			config = [(4<<4) + channel, int(volts_bin[:8],2), -int(volts_bin[8:], 2)]
-		self.__do(config)
+			config = [(4<<4) + channel, int(volts_bin[:8],2), int(volts_bin[8:], 2) << 4]
+		self.__do(config, with_crc4=2)
+
+	def turn_on_led(self, ledNum):
+		config_dac(ledNum, 0x666)
+	def turn_off_led(self, ledNum):
+		config_dac(ledNum, 0)
 
 	#########   Data transmission #######
 
-	def __do(self, task, print_garbage=False, expect_package=False):
+	def __do(self, task, print_garbage=False, expect_package=False, with_crc4=1):
 		"""
 		Send an arbitrary command given by task and potentially read the response.
 		This method is thread safe and acquires/releases a lock around its read/write operations
@@ -398,17 +406,20 @@ class sensor:
 		:param task byte to send to device
 		:param index number to add to task byte. E.g. reset_transducer requires an index to say which transducer
 		:param return_packet decide whether to read in and parse a 51 byte packet after sending the command
+		param with_crc4 indicates whether to append a CRC4 to the message (1), or not (0), or append one in the last 4 bits
+			of the final byte rather than as an extra byte (2)
 		:return parsed response from sensor if return_packet is True. None otherwise
 		"""
 		
 		#Write the command, ensuring it is a bytes object, and that no other thread is trying to write at this time
 		self.threadLock.acquire()
-		toWrite = self.toStr(task, with_crc4=True)
-		print('Sending ' + toWrite)
+		toWrite = self.toStr(task, with_crc4=with_crc4)
+		#print('Sending ' + toWrite)
+		self.port.ftdi_fn.ftdi_usb_purge_rx_buffer() #Purge buffers of any garbage first
 		self.port.write(toWrite)
-		self.port.purge(1) 
+		#self.port.flush(ftdi.FLUSH_OUTPUT) 
 		
-		timeout = 11
+		timeout = 20 #Expect 11 + random leading and following zeros
 		if expect_package:
 			timeout = 100
 
@@ -487,7 +498,7 @@ class sensor:
 	    :return True if the checksum matches, False otherwise
 	    """
 	    if type(p) == int:
-	    	p = self.toBytes(self.to_hex(p))
+	    	p = self.toBytesList(self.to_hex(p))
 	    if type(crc) != int:
 	    	crc = self.to_int(crc)
 
@@ -498,7 +509,7 @@ class sensor:
 
 	    return checksum == crc
 
-	def __reset(self,timeout=100):
+	def __reset(self,timeout=10):
 		"""
 		Reset all input and output buffers until there are no more bytes waiting.
 		If the buffer keeps filling up with new data after the reset, this will try
@@ -506,8 +517,8 @@ class sensor:
 		writing to the buffer
 		"""
 		i = 0
-		while self.port.getQueueStatus() > 0 and i < 100:
-			self.port.resetDevice()
+		while len(self.readBytes(1)) != 0 and i < 100:
+			self.port.ftdi_fn.ftdi_usb_reset()
 			i += 1
 
 		if i == timeout:
@@ -539,7 +550,14 @@ class sensor:
 	def readBytes(self, num_bytes):
 		try:
 			read_in = self.port.read(num_bytes * BYTES_PER_DIGIT_IN)
-			retval = self.toBytes(read_in)
+		except ftdi._base.FtdiError:
+			print('FTDI Error thrown while reading')
+			self.num_errors += 1
+			if self.num_errors == 100:
+				raise ftdi._base.FtdiError('Failed too many times. Exiting...')
+			return None
+		try:
+			retval = self.toBytesList(read_in)
 			return retval
 		except ValueError:
 			return None
@@ -564,7 +582,7 @@ class sensor:
 
 		return num
 
-	def toBytes(self, string):
+	def toBytesList(self, string):
 		"""
 		Split a hexadecimal string of any length into a list of bytes
 		:param string the hexadecimal string to convert
@@ -577,40 +595,69 @@ class sensor:
 		#Split into list and return
 		return [int(string[i:i+2],16) for i in range(0,len(string),2)]
 
-	def toStr(self, byte_list, with_crc4=False):
+	def toStr(self, byte_list, with_crc4=0, format=0):
 		"""
-		Do the opposite of toBytes. Convert a list of bytes (array of 8-bit ints in decimal)
-		to a string in hex. If the last byte of the list is negative, the CRC4 is placed in the 4 LSBs of that byte
-		rather than as an additional byte at the end
-		:param byte_list the list of bytes to convert to a hexadecimal string
-		:param with_crc4 True if a CRC4 checksum for the number given by byte_list should be appended to the string
-			Default is False, so no CRC4 is computed or added
+		Do the opposite of toBytesList. Convert a list of bytes (array of 8-bit ints in decimal)
+		to a byte string in hex.
+		:param byte_list the list of bytes (as decimal ints) to convert to a byte string
+		:param with_crc4 1 if a CRC4 checksum for the number given by byte_list should be appended to the string
+			Default is 0, so no CRC4 is computed or added. A value of 2 adds the CRC4 to the last 4 bits of the last byte
+			rather than as an additional byte
+		:param format can take the value 0 (bytes) or 1 (string))
+			If format = 0, numbers will undergo the following conversion: 15 -> 0x0f -> b'\x0f' which is a bytes
+			object useful for sending to the sensor. This works in Python 2.7 and 3
+			If format = 1, numbers will be converted directly to a hex string: 15 -> '0f', which is actually 2 bytes b'\x30\x66'.
+			These are the ASCII values of the characters. This is not useable for sending to a sensor.
 		"""
 		string = ''
 
-		#If the last element is negative, make sure the CRC4 is desired
-		if byte_list[-1] < 0:
-			if with_crc4==False:
-				#If not, the last element should not be negative 
-				byte_list[-1] *= -1
-			else:
-				#If yes, find the CRC4 first, then shift the last byte 4 bits and add the CRC4
-				crc = CRC.crc4(byte_list, table=self.crc4_table)
-				byte_list[-1] *= -1
-				byte_list[-1] <<= 4
-				byte_list[-1] += crc
-				with_crc4 = False #Make sure we don't add another CRC4
+		if with_crc4 == 2:
+			#If yes, find the CRC4 first, then shift the last byte 4 bits and add the CRC4
+			crc = CRC.crc4(self.shift4(byte_list), table=self.crc4_table)
+			byte_list[-1] <<= 4
+			byte_list[-1] += crc
+			with_crc4 = 0 #Make sure we don't add another CRC4
 
 		for i in range(len(byte_list)):
+			if format == 0:
+				string += self.toBytes(byte_list[i])
+			else:
 				string += self.to_hex(byte_list[i])
 
-		if with_crc4:
-			string += '0' + self.to_hex(CRC.crc4(byte_list, table=self.crc4_table))
+		if with_crc4 == 1:
+			if format == 0:
+				string += self.toBytes(CRC.crc4(byte_list, table=self.crc4_table))
+			else:
+				string += '0' + self.to_hex(CRC.crc4(byte_list, table=self.crc4_table))
 
 		return string
 
 	def to_hex(self, num):
+		"""
+		Convert to hex without the "0x" at the start or the random "L" at the end
+		"""
 		return "%x" % num
+
+	def toBytes(self,byteList):
+		"""
+		The only reliable Python 2 and 3- compatible int-to-bytes conversion I could find 
+		"""
+		byte = ''
+		for num in byteList:
+			byte += struct.pack("B", num)
+		return byte
+
+	def shift4(self, byteList):
+		"""
+		Shift the number given as a list of bytes in decimal form by 4 bits to the right
+		This is mostly used for CRC4 calculation when the CRC4 is appended to the last byte
+		"""
+		string = ''
+		for num in byteList:
+			string += self.to_hex(num)
+
+		string = '0' + string[:-1]
+		return self.toBytesList(string)
 
 class read_thread (threading.Thread):
 	"""
@@ -633,7 +680,14 @@ class read_thread (threading.Thread):
 	def readBytes(self, num_bytes):
 		try:
 			read_in = self.port.read(num_bytes * BYTES_PER_DIGIT_IN)
-			retval = self.toBytes(read_in)
+		except ftdi._base.FtdiError:
+			print('FTDI Error thrown while reading')
+			self.error_count += 1
+			if self.error_count == 100:
+				raise ftdi._base.FtdiError('Failed too many times. Exiting...')
+			return None
+		try:
+			retval = self.toBytesList(read_in)
 			return retval
 		except ValueError:
 			return None
@@ -705,7 +759,7 @@ class read_thread (threading.Thread):
 	    """
 	    if type(p) == int:
 	    	p = self.to_hex(p)
-	    	p = self.toBytes(p)
+	    	p = self.toBytesList(p)
 	    if type(crc) != int:
 	    	crc = self.to_int(crc)
 
@@ -733,7 +787,7 @@ class read_thread (threading.Thread):
 
 		return num
 
-	def toBytes(self, string):
+	def toBytesList(self, string):
 		"""
 		Split a hexadecimal string of any length into a list of bytes
 		:param string the hexadecimal string to convert
@@ -753,7 +807,7 @@ class read_thread (threading.Thread):
 		ends if exitFlag is set to True, which happens when stop_data_transfer() is called
 		"""
 		global data_stream
-		self.port.resetDevice()
+		self.port.ftdi_fn.ftdi_usb_reset()
 		done = 0
 
 		while (True): #Run until exitFlag is set
