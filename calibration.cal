@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FTSensor  Serial="FT24092" BodyStyle="Nano43" Family="DAQ" NumGages="6" CalFileVersion="1.1">
+	<Calibration  PartNumber="SI-36-0.5" CalDate="4/20/2018" ForceUnits="N" TorqueUnits="N-mm" OutputMode="Ground Referenced Differential" OutputRange="20">
+		<Axis Name="Fx" values=" 1.0 0.0 0.0 0.0 0.0 0.0 "/>
+		<Axis Name="Fy" values=" 0.0 1.0 0.0 0.0 0.0 0.0 "/>
+		<Axis Name="Fz" values=" 0.0 0.0 1.0 0.0 0.0 0.0 "/>
+		<Axis Name="Tx" values=" 0.0 0.0 0.0 1.0 0.0 0.0 "/>
+		<Axis Name="Ty" values=" 0.0 0.0 0.0 0.0 1.0 0.0 "/>
+		<Axis Name="Tz" values=" 0.0 0.0 0.0 0.0 0.0 1.0 "/>
+	</Calibration>
+</FTSensor>
+

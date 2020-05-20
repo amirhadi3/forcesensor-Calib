@@ -8,11 +8,12 @@ import pylibftdi as ftdi
 from numpy import random
 import time
 import sys
-import CRC
+import crc
+import codecs
+import struct
 
-INIT_BYTE = 'AA'
-CRC4 = 0x03
-BYTES_PER_DIGIT_IN = 2
+INIT_BYTE = 0xAA
+BYTES_PER_DIGIT_IN = 1
 
 class virtual_sensor:
 
@@ -23,7 +24,7 @@ class virtual_sensor:
 		self.port.ftdi_fn.ftdi_set_latency_timer(1)
 		# self.port.setTimeouts(3,3)
 		# self.port.setUSBParameters(64)
-		self.port.baudrate =5000000
+		self.port.baudrate = 5000000
 		self.reset()
 		self.port.ftdi_fn.ftdi_usb_reset()
 		print(self.port)
@@ -34,28 +35,28 @@ class virtual_sensor:
 		self.counter2 = 0
 
 		self.commands = {
-			'12': self.sendPackage, #Data request
-			'10': self.setSendFlag, #Start data transfer
-			'11': self.setSendFlag, #Stop data transfer
-			'E1': self.deac_transducer,
-			'E2': self.deac_transducer,
-			'E3': self.deac_transducer,
-			'E4': self.deac_transducer,
-			'E5': self.deac_transducer,
-			'E6': self.deac_transducer,
-			'F0': self.reset, #Full sensor reset
-			'F1': self.reset_transducer,
-			'F2': self.reset_transducer,
-			'F3': self.reset_transducer,
-			'F4': self.reset_transducer,
-			'F5': self.reset_transducer,
-			'F6': self.reset_transducer,
-			'FA': self.reset_imu,
-			'FB': self.reset_dac
+			0x12: self.sendPackage, #Data request
+			0x10: self.setSendFlag, #Start data transfer
+			0x11: self.setSendFlag, #Stop data transfer
+			0xE1: self.deac_transducer,
+			0xE2: self.deac_transducer,
+			0xE3: self.deac_transducer,
+			0xE4: self.deac_transducer,
+			0xE5: self.deac_transducer,
+			0xE6: self.deac_transducer,
+			0xF0: self.reset, #Full sensor reset
+			0xF1: self.reset_transducer,
+			0xF2: self.reset_transducer,
+			0xF3: self.reset_transducer,
+			0xF4: self.reset_transducer,
+			0xF5: self.reset_transducer,
+			0xF6: self.reset_transducer,
+			0xFA: self.reset_imu,
+			0xFB: self.reset_dac
 			}
 
-		self.crc4_table = CRC.calculate_CRC4_table()
-		self.crc32_table = CRC.calculate_CRC32_table()
+		self.crc8_table = crc.calculate_CRC8_table()
+		self.crc32_table = crc.calculate_CRC32_table()
 
 	def __del__(self):
 		try:
@@ -64,25 +65,20 @@ class virtual_sensor:
 			print('Shutting down')
 
 	def makeByte(self, value=-1, length=1):
-		byte = ''
+		byte = []
 		if value == -1:
 			for i in range(length):
-				n = ''
 				if i == 36: #Make a valid report ID
 					n = random.randint(0,4)
-					nums = ['01', '02', '04', '05', '08']
+					nums = [0x01, 0x02, 0x04, 0x05, 0x08]
 					n = nums[n]
 				else:
-					n = hex(random.randint(0,255))[2:]
-					while len(n) < 2:
-						n = '0' + n
-				byte += n
+					n = random.randint(0,255)
+				byte.append(n)
 		else:
 			for i in range(length):
-				n = hex(value)[2:]
-				while len(n) < 2:
-					n = '0' + n
-				byte += n
+				n = value
+				byte.append(n)
 
 		return byte
 
@@ -94,23 +90,17 @@ class virtual_sensor:
 		"""
 		
 		#Create random byte packet
-		data = self.makeByte(length=47)
+		data = self.makeByte(length=49)
 
 		#Calculate CRC-32 for the packet
 		mainCRC = self.__calc_crc(data)
 
-		if len(mainCRC) > 8:
-			mainCRC = mainCRC[:8]
-		while len(mainCRC) < 8:
-			mainCRC = '0' + mainCRC
-
 		#Generate CRC4 check for start bytes
-		crc = self.__calc_crc( hex((int(INIT_BYTE,16) << 4) + self.counter)[2:], 4, CRC4)
+		crc = self.__calc_crc([INIT_BYTE, self.counter], 8)
 
-		#  < Init byte > < 4-bit counter | CRC4 > < Byte 0 > ... < Byte 47 > < CRC32 >   
-		msg = INIT_BYTE + hex(self.counter)[2:] + crc + data + mainCRC
+		#  < Init byte > < 8-bit counter > < CRC8 > < Byte 0 > ... < Byte 49 > < CRC32 >   
+		msg = self.toBytes([INIT_BYTE, self.counter, crc] + data + mainCRC)
 		self.inc_counter()
-		print(msg)
 		
 		return msg
 
@@ -125,7 +115,7 @@ class virtual_sensor:
 		Set send flag to True if command was start_data_transfer
 		Set to False if command was stop_data_transfer
 		"""
-		if command == '11':
+		if command == 0x11:
 			self.send_flag = False
 			print('Stopping data transfer')
 		else:
@@ -210,17 +200,32 @@ class virtual_sensor:
 			Default is the typical CRC-32 polynomial. CRC-4 often uses 0x03
 		:return The n-bit checksum as a hexadecimal string
 		"""
-		p = self.toBytes(p)
 
-		if n == 4:
-			return "%x" % CRC.crc4(p,polynomial,self.crc4_table)
+		if n == 8:
+			return crc.crc8(p,polynomial,self.crc8_table)
 		elif n == 32:
-			return "%x" % CRC.crc32(p,polynomial,self.crc32_table)
+			csum = crc.crc32(p,polynomial,self.crc32_table)
+			return [(csum & 0xFF000000)>>24, (csum & 0x00FF0000)>>16, (csum & 0x0000FF00)>>8, csum & 0x000000FF]
 
-	def toBytes(self, string):
+	def toBytes(self,byteList):
+		"""
+		The only reliable Python 2 and 3- compatible int-to-bytes conversion I could find 
+		"""
+		byte = ''
+		if type(byteList) == int:
+			byteList = [byteList]
+
+		for num in byteList:
+			byte += struct.pack("B", num)
+		return byte
+
+	def toBytesList(self, string):
 		"""
 		Split a hexadecimal string of any length into a list of bytes
+		:param string the hexadecimal string to convert
 		"""
+
+		string = codecs.encode(string, 'hex')
 
 		#Watch out for leading zeros
 		if len(string) % 2 != 0:
@@ -231,7 +236,7 @@ class virtual_sensor:
 
 	def read(self, n):
 		try:
-			return self.port.read(n*BYTES_PER_DIGIT_IN)
+			return self.toBytesList(self.port.read(n*BYTES_PER_DIGIT_IN))
 		except ftdi._base.FtdiError:
 			self.num_errors += 1
 			if self.num_errors > 100:
@@ -248,34 +253,23 @@ class virtual_sensor:
 		"""
 
 		while (True):
-			cmd = ''
+			cmd = []
 
-			while(cmd == None or cmd == ''):
+			while(cmd == []):
 				#Wait for new command while executing current one (send packages if start_data_transfer was called)
 				if self.send_flag:
 					self.sendPackage()
 					self.pause_micro(666) #Pause for 666us (approx 1500Hz)
-				cmd = self.read(1)
+				cmd = self.read(4)
 
 			print(cmd)
+			cmd = cmd[0]
 
-			if str.startswith(cmd, '4'):
-				self.config_dac()
-				self.read(1)
-			elif str.startswith(cmd, '3'):
-				self.config_trans()
-				self.read(1)
-			elif str.startswith(cmd, '2'):
-				self.config_imu()
-				self.read(1)
-			else:
-				#Execute current command
-				try:
-					self.commands[cmd.upper()](cmd)
-				except KeyError:
-					print('Invalid Command')
-
-			self.read(1)
+			#Execute current command
+			try:
+				self.commands[cmd](cmd)
+			except KeyError:
+				print('Invalid Command')
 
 		self.port.close() #close the port when done
 

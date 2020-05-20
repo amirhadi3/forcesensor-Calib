@@ -1,7 +1,23 @@
 import time
 import numpy as np
 import csv
-import CRC
+import struct
+
+def toBytesList(num):
+        """
+        Split an int into a list of bytes
+        :param num the int to convert
+        """
+        string = hex(num)[2:]
+        if string[-1].lower() == 'l':
+            string = string[:-1]
+
+        #Watch out for leading zeros
+        if len(string) % 2 != 0:
+            string = '0' + string
+
+        #Split into list and return
+        return [int(string[i:i+2],16) for i in range(0,len(string),2)]
 
 def crc4(p, polynomial=0x3, table=[]):
     """
@@ -15,6 +31,9 @@ def crc4(p, polynomial=0x3, table=[]):
     	Leave unset to calculate using bitwise operations instead
     :return the CRC4 checksum as an int
     """
+    if type(p) == int or type(p) == long:
+        p = toBytesList(p)
+
     #Initialize CRC to 0    
     crc = 0
     length = len(p)
@@ -84,6 +103,9 @@ def crc32(p, polynomial=0x04C11DB7, table=[]):
     :return the CRC32 checksum as an int
     """
 
+    if type(p) == int or type(p) == long:
+        p = toBytesList(p)
+
     length = len(p)
     crc = 0 #CRC value is 32bit
 
@@ -100,7 +122,7 @@ def crc32(p, polynomial=0x04C11DB7, table=[]):
 	            crc &= 0xFFFFFFFF #Keep crc 32 bits
     else: 
         for i in range(length):
-	    #XOR-in next input byte into MSB of crc and get this MSB, that's our new intermediate divident
+	    #XOR-in next input byte into MSB of crc and get this MSB, that's our new intermediate dividend
 	    pos = ((crc ^ (p[i] << 24)) >> 24) & 0xFF
 	    #Shift out the MSB used for division per lookup table and XOR with the remainder
 	    crc = ((crc << 8) ^ int(table[pos])) & 0xFFFFFFFF
@@ -140,3 +162,72 @@ def calculate_CRC32_table():
             
             
         return CRC32_table
+
+def crc8(p,polynomial=0x07,table=[]):
+	"""
+	Calculates the CRC-8 checksum of a number by bitwise operations or by
+	using a lookup table
+	:param p is the list of bytes to find the CRC of (list of ints)
+	:param polynomial the divisor polynomial to use
+	Default is 0x
+	:param table provide the lookup table to calculate CRC that way
+	Is faster with table but can also be done without
+	Leave unset to calculate using bitwise operations instead
+	:return the CRC-8 checksum as an int
+	"""
+    	if type(p) == int or type(p) == long:
+        	p = toBytesList(p)
+
+	#Initialize CRC to 0    
+	crc = 0
+	length = len(p)
+
+	if table == []:
+		for j in range(length):
+			crc ^= p[j] #move byte into MSB of 8bit CRC
+            		crc &= 0xFF
+
+			for i in range(8):
+				if (crc & 0x80) != 0: # test for MSB = bit 7
+					crc = ((crc << 1) ^ polynomial) & 0xFF
+				else:
+					crc <<= 1
+					crc &= 0xFF #Discard anything beyond 8 bits
+	else:
+		for i in range(length):
+			#XOR-in next input byte into MSB of crc and get this MSB, that's our new intermediate divident
+			pos = (crc ^ (p[i])) & 0xFF
+			#Update the CRC from the lookup table
+			crc = int(table[pos])
+	return crc & 0xFF
+
+def calculate_CRC8_table():
+    """
+    Generates a lookup table to find the CRC-8 checksum of a number
+    :return the table as a list of 256 ints
+    """
+    polynomial = 0x07
+    row = []
+    CRC8_table = np.zeros(256)
+    with open('CRC8_LUT.csv','w') as csvfile:
+        outfile = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        i = 0
+
+        for dividend in range(256):# iterate over all possible input byte values 0 - 255 */
+            curByte = dividend;
+            for bit in range(8):
+                if (curByte & 0x80) != 0:
+                    curByte <<= 1
+                    curByte ^= polynomial
+                    curByte &= 0xFF
+                else:
+                    curByte <<= 1
+                    curByte &= 0xFF
+
+            row.append(hex(curByte))
+            if ((dividend+1)%16 == 0):
+                outfile.writerow(row)
+                row = []
+
+            CRC8_table[dividend] = curByte;
+    return CRC8_table
