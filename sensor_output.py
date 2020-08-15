@@ -61,8 +61,8 @@ class sensor_output:
 			#Convert all 6 values in differentials and sums to ints
 			self.differential_raw = [self.to_int(byte_data[i:i+3]) for i in range(0,18,3)]
 			
-			print(fsc)
-			print(ofc)
+			#print(fsc)
+			#print(ofc)
 			self.differential = [self.volts_ads(self.differential_raw[i], G[i], vref, a[i], b[i], ofc[i], fsc[i]) for i in range(6)]
 
 			self.sum_raw = [self.to_int(byte_data[i:i+3]) for i in range(18,36,3)]

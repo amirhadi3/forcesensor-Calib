@@ -95,7 +95,7 @@ if cont:
 
 	#Generate byte message with sample rate 
 	hz = toHex(HZ)
-	print(hz)
+	#print(hz)
 	while not len(hz) == 4:
 		hz = '0' + hz
 	b = b'' + toStr([0x10,int(hz[:2],16),int(hz[2:],16)])
