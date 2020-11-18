@@ -11,7 +11,7 @@ import datetime
 import ati
 from datetime import datetime as date
 
-TIME = 20 #seconds
+TIME = 30 #seconds
 
 BAUD = 3000000
 HZ = 1500
@@ -70,11 +70,11 @@ atiData = []
 temp = []
 
 sensor = Sensor(calMatrix)
-fsc = [0]*6
-ofc = [0]*6
+#fsc = [0]*6
+#ofc = [0]*6
 #Turn on LEDs, read FSC, OFC registers
-for i in range(6):
-	sensor.config_dac(i, 7)
+#for i in range(6):
+#	sensor.config_dac(i, 7)
 
 cont = True
 time.sleep(1)
